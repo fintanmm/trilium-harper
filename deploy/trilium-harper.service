@@ -1,0 +1,48 @@
+[Unit]
+Description=trilium-harper: grammar and spell checking for Trilium Notes
+Documentation=https://github.com/Automattic/harper-ls
+After=network.target
+
+[Service]
+Type=simple
+
+# Keep the token stable across restarts. Generate one with:
+#   openssl rand -base64 32
+# Leaving this unset makes the bridge mint a random token on every start,
+# which then has to be re-pasted into the Trilium script.
+Environment=NODE_ENV=production
+#Environment=HARPER_BRIDGE_TOKEN=replace-me-with-a-real-token
+Environment=HARPER_BRIDGE_PORT=4000
+Environment=HARPER_BRIDGE_WORKSPACE=%h/.local/share/harper-trilium
+# Only needed if harper-ls is not on systemd's PATH (e.g. Homebrew on Linux):
+#Environment=HARPER_LS_BIN=/home/linuxbrew/.linuxbrew/bin/harper-ls
+# Uncomment if you write British or Canadian English, so Harper stops flagging
+# colour/centre/organize as misspellings.
+#Environment=HARPER_DIALECT=American
+
+ExecStart=/usr/bin/env node %h/Projects/TriliumPlugins/trilium-harper/src/server.js
+WorkingDirectory=%h/Projects/TriliumPlugins/trilium-harper
+
+Restart=on-failure
+RestartSec=3
+
+# The bridge must not outlive the session; SIGTERM triggers a clean shutdown
+# that closes the harper-ls child.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# It only needs to read its own workspace and talk to a loopback socket.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Harper writes its workspace dictionaries here, so that one path stays writable.
+ReadWritePaths=%h/.local/share/harper-trilium
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+
+[Install]
+WantedBy=default.target

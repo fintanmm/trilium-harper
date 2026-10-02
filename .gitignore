@@ -1,0 +1,7 @@
+node_modules/
+
+# Local agent/tooling state, not part of the plugin
+.opencode/
+
+# Harper workspace dictionaries and logs
+*.log

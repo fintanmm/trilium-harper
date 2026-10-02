@@ -1,0 +1,17 @@
+{
+  "name": "trilium-harper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Grammar and spell checking for Trilium Notes, via a local harper-ls process.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
