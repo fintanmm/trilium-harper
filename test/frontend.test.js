@@ -50,22 +50,26 @@ function loadFrontend() {
     return sandbox.HarperTrilium.pure;
 }
 
-/* ── a minimal stand-in for CKEditor's view tree ────────────────────────────
- * Only the four members the script touches are needed: `is`, `getName`,
- * `getChildren` on elements, and `data`/`offset` on text nodes.
+/* ── a stand-in for CKEditor's view tree, mirroring the real API ────────────
+ * Elements expose `name`, `is` and `getChildren`; every node exposes `parent`
+ * and `index`. Text nodes expose only `data` — there is no `getName()` and no
+ * `offset` on view nodes, so the fake must not invent either.
  */
 function el(name, children = []) {
     const node = {
-        getName: () => name,
+        name,
         is: (n) => n === "element" || n === name,
         getChildren: () => children,
     };
-    for (const child of children) child.parent = node;
+    children.forEach((child, i) => {
+        child.parent = node;
+        child.index = i;
+    });
     return node;
 }
 
-function text(data, offset = 0) {
-    return { data, offset };
+function text(data) {
+    return { data };
 }
 
 /**
@@ -76,20 +80,9 @@ function text(data, offset = 0) {
  *   el("code", [text(…)])  a prebuilt element with children
  */
 function para(...parts) {
-    let offset = 0;
     const children = parts.map((part) => {
-        // A prebuilt element: keep it, but it still consumes one child slot.
-        // Real CKEditor view nodes carry their index within the parent as
-        // `offset`, so the fake must too.
-        if (part && typeof part.getName === "function") {
-            part.offset = offset;
-            offset += 1;
-            return part;
-        }
-        const data = typeof part === "string" ? part : part[1];
-        const node = text(data, offset);
-        offset += data.length;
-        return node;
+        if (part && typeof part.is === "function") return part;
+        return text(typeof part === "string" ? part : part[1]);
     });
     return el("paragraph", children);
 }
@@ -171,6 +164,17 @@ describe("frontend: buildWireText", () => {
         assert.equal(wire, `a${emoji}b`);
         assert.equal(wire.length, 4);
     });
+
+    it("reads the element name through getName() when name is absent", () => {
+        const p = para(["t", "a"], el("br"), ["t", "b"]);
+        const br = p.getChildren()[1];
+        delete br.name;
+        br.getName = () => "br";
+
+        const { text: wire, segments } = buildWireText(doc(p));
+        assert.equal(wire, "a\nb");
+        assert.equal(segments[1].break, true, "a resolved name keeps the br a soft break");
+    });
 });
 
 describe("frontend: positionToOffset", () => {
@@ -219,6 +223,10 @@ describe("frontend: offsetToPosition", () => {
         const at = offsetToPosition(segments, 6);
         assert.ok(at, "expected a position");
         assert.equal(at.offset, 6);
+        // The parent must be the text node itself, not the paragraph: a view
+        // position whose parent is an element is a child index, not a column.
+        assert.equal(at.parent.data, "hello world");
+        assert.equal(at.parent.parent.name, "paragraph");
     });
 
     it("resolves offsets in the second block to that block's text node", () => {
@@ -229,6 +237,8 @@ describe("frontend: offsetToPosition", () => {
         const at = offsetToPosition(segments, 8);
         assert.ok(at);
         assert.equal(at.offset, 2, "'r' is the third character of 'world'");
+        assert.equal(at.parent.data, "world");
+        assert.equal(at.parent.parent.name, "paragraph");
     });
 
     it("resolves an offset at the very end of the document", () => {
@@ -243,9 +253,15 @@ describe("frontend: offsetToPosition", () => {
         const root = doc(para(["t", "a"], el("br"), ["t", "b"]));
         const { segments } = buildWireText(root);
 
-        // The <br> is child index 1 of the paragraph.
-        assert.equal(offsetToPosition(segments, 1).offset, 1, "offset on the newline is before the br");
-        assert.equal(offsetToPosition(segments, 2).offset, 2, "offset after the newline is after the br");
+        // The <br> is child index 1 of the paragraph, so a position around it
+        // has the paragraph as parent and a child index as offset.
+        const on = offsetToPosition(segments, 1);
+        assert.equal(on.parent.name, "paragraph", "the br segment resolves to the element");
+        assert.equal(on.offset, 1, "offset on the newline is before the br");
+
+        const past = offsetToPosition(segments, 2);
+        assert.equal(past.parent.data, "b", "past the newline we are inside the next text node");
+        assert.equal(past.offset, 0, "which begins immediately after the br");
     });
 
     it("returns null for an empty document", () => {

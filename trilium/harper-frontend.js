@@ -61,8 +61,8 @@ const CONFIG = {
             segments.push({
                 wireStart: text.length,
                 wireEnd: text.length + data.length,
-                parent: node.parent,
-                nodeOffset: node.offset,
+                parent: node,
+                nodeOffset: 0,
                 masked,
             });
             text += masked ? data.replace(/[^\n]/g, " ") : data;
@@ -70,7 +70,8 @@ const CONFIG = {
 
         const visit = (node, inCode) => {
             if (node.is && node.is("element")) {
-                const name = node.getName();
+                // View elements carry `name`; older builds expose `getName()`.
+                const name = typeof node.getName === "function" ? node.getName() : node.name;
                 // `pre` is a code block, `code` is inline code.
                 const nowCode = inCode || name === "pre" || name === "code";
 
@@ -81,7 +82,7 @@ const CONFIG = {
                         wireStart: text.length,
                         wireEnd: text.length + 1,
                         parent: node.parent,
-                        nodeOffset: node.offset,
+                        nodeOffset: node.index ?? node.offset ?? 0,
                         break: true,
                     });
                     text += "\n";
@@ -167,8 +168,8 @@ const CONFIG = {
         if (!start || !end) return null;
 
         return view.createRange(
-            view.createPosition(start.parent, start.offset),
-            view.createPosition(end.parent, end.offset),
+            view.createPositionAt(start.parent, start.offset),
+            view.createPositionAt(end.parent, end.offset),
         );
     }
 
@@ -329,7 +330,7 @@ const CONFIG = {
         /** The element the overlay should be positioned inside. */
         attachOverlay() {
             const editable = this.editor.editing.view.document.getRoot();
-            const host = this.editor.editing.view.domConverter.viewDomToDom(editable);
+            const host = this.editor.editing.view.getDomRoot() ?? this.editor.editing.view.domConverter.viewToDom(editable);
             if (!host) return;
             if (host.offsetParent === null && getComputedStyle(host).position === "static") {
                 host.style.position = "relative";

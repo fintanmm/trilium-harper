@@ -34,7 +34,7 @@ message shape the editor can render.
 
 ```sh
 npm install
-npm test          # 52 tests: protocol, bridge, origins, frontend, and a real harper-ls
+npm test          # 53 tests: protocol, bridge, origins, frontend, and a real harper-ls
 ```
 
 `npm test` starts an actual `harper-ls`, so it also confirms the binary is
@@ -56,12 +56,24 @@ workspace: /home/you/.local/share/harper-trilium
 
 Then attach the frontend to a note:
 
-1. Create a note in Trilium, e.g. `Harper`.
-2. Attach `trilium/harper-frontend.js` to it.
-3. Add `#run=frontendStartup` to the note title so the script starts on load.
-4. Edit the `CONFIG` block at the top of the file: paste in `TOKEN`, and set
+1. Create a note in Trilium to hold the script, e.g. `Harper`.
+2. Attach `trilium/harper-frontend.js` to it as a **code** note.
+3. Edit the `CONFIG` block at the top of the file: paste in `TOKEN`, and set
    `HOST`/`PORT` to match the bridge.
+4. On that **same code note**, add the label `run` with the value
+   `frontendStartup`. Trilium runs any script carrying that label when the app
+   starts.
 5. Reload Trilium. Type in any note to see squiggles.
+
+The attribute is easy to get wrong, and failure is silent: it belongs on the
+code note itself, not on a parent or sibling note, it must be a **label**
+(`run`) rather than a tag, and the value must be exactly `frontendStartup`. A
+mistyped label leaves the script dormant — the bridge log shows no connection
+at all. Check it with:
+
+```sh
+sqlite3 ~/.local/share/trilium-data/document.db "SELECT attributeId, attributeValue FROM attributes WHERE attributeId = 'run';"
+```
 
 The `TOKEN` is the only required edit. `HOST` defaults to `127.0.0.1:4000`.
 
