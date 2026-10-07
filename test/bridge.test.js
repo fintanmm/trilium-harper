@@ -32,10 +32,13 @@ describe("bridge", { skip: HAS_HARPER_LS ? false : "harper-ls not installed" }, 
      *
      * The bridge greets a client the moment the socket opens, so waiting for
      * `open` before subscribing can lose the welcome.
+     *
+     * @param {string} url
+     * @param {object} [options] Passed to `ws` — used to fake an `Origin`.
      */
-    const open = (url) =>
+    const open = (url, options) =>
         new Promise((resolve, reject) => {
-            const ws = new WebSocket(url);
+            const ws = new WebSocket(url, [], options);
             ws.on("message", (raw) => {
                 const msg = JSON.parse(raw.toString());
                 const waiter = inbox.find((w) => w.match(msg));
@@ -210,5 +213,22 @@ describe("bridge", { skip: HAS_HARPER_LS ? false : "harper-ls not installed" }, 
         assert.notEqual(bridge.noteUri("abc123"), bridge.noteUri("def456"));
         // Path separators and traversal must not escape the notes directory.
         assert.match(bridge.noteUri("../../etc/passwd"), /\/notes\/______etc_passwd\.md$/);
+    });
+
+    it("rejects a foreign origin", async () => {
+        const foreign = await open(`${bridge.url}?token=test-token`, { origin: "https://evil.example" });
+        const code = await new Promise((resolve) => {
+            foreign.once("close", resolve);
+            foreign.once("error", () => resolve("error"));
+        });
+        assert.equal(code, 1008, "should be closed as a policy violation");
+    });
+
+    // Last: connecting a new client replaces the shared `socket` above.
+    it("accepts the Trilium desktop app's custom-scheme origin", async () => {
+        const desktop = await open(`${bridge.url}?token=test-token`, { origin: "trilium-app://app" });
+        const welcome = await waitFor((m) => m.type === ServerMessage.WELCOME);
+        assert.equal(welcome.protocolVersion, PROTOCOL_VERSION);
+        desktop.close();
     });
 });

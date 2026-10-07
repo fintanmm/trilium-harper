@@ -34,7 +34,7 @@ message shape the editor can render.
 
 ```sh
 npm install
-npm test          # 42 tests: protocol, bridge, frontend, and a real harper-ls
+npm test          # 52 tests: protocol, bridge, origins, frontend, and a real harper-ls
 ```
 
 `npm test` starts an actual `harper-ls`, so it also confirms the binary is
@@ -129,7 +129,8 @@ The bridge binds to `127.0.0.1` only, so it is not reachable from the network.
 It also:
 
 - requires the token on every connection (`?token=…`);
-- accepts only loopback, LAN, and private-range `Origin` headers;
+- accepts only the Trilium desktop app's `trilium-app://app` origin plus
+  loopback, LAN, and private-range `Origin` headers;
 - allows **one** editor client at a time, since two tabs would fight over the
   language server's document state.
 
@@ -218,7 +219,8 @@ src/harper-ls.js  harper-ls process, config, diagnostics, code actions
 src/server.js     WebSocket bridge, note lifecycle
 trilium/harper-frontend.js   the file you attach to a note
 deploy/trilium-harper.service
-test/bridge.test.js          7 tests   WebSocket protocol and note lifecycle
+test/bridge.test.js          9 tests   WebSocket protocol and note lifecycle
+test/origin.test.js          8 tests   the Origin allow-list
 test/frontend.test.js       18 tests   editor text extraction, via node:vm
 test/lsp-integration.test.js 17 tests   against a real harper-ls process
 ```
@@ -242,3 +244,8 @@ revisions; if you see them, the session's `revision` counter is not advancing on
 
 **Bridge won't start.** It exits with a message if `harper-ls` is missing. Set
 `HARPER_LS_BIN` to its full path.
+
+**`rejected connection from origin …` in the journal.** The bridge refuses any
+`Origin` it does not recognise, before the token is even checked. The desktop
+app's `trilium-app://app` and loopback/LAN addresses are allowed; a browser
+reaching the bridge through some other host name is not.

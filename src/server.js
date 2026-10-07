@@ -22,11 +22,34 @@ import {
 } from "./protocol.js";
 
 /**
- * Origins permitted to connect. Loopback and private ranges, since Trilium is
- * typically reached either directly or over a LAN address.
+ * `http(s)` origins permitted to connect. Loopback and private ranges, since
+ * Trilium is typically reached either directly or over a LAN address.
  */
 const ORIGIN_ALLOWED =
     /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?(\/.*)?$/;
+
+/**
+ * Non-http origins permitted verbatim. The Trilium desktop app serves its UI
+ * from the privileged custom scheme `trilium-app://app`, so there is no
+ * `http(s)://` for `ORIGIN_ALLOWED` to match — and TriliumNext itself treats
+ * that exact origin as the app shell, so nothing broader is needed here.
+ */
+const ORIGINS_EXACT = new Set(["trilium-app://app"]);
+
+/**
+ * Whether an incoming `Origin` header may connect.
+ *
+ * A missing header is allowed: browsers always stamp `Origin` on a WebSocket
+ * handshake, so absence means a non-browser client, which still has to
+ * present the token.
+ *
+ * @param {string | undefined} origin
+ * @returns {boolean}
+ */
+export function isOriginAllowed(origin) {
+    if (!origin) return true;
+    return ORIGINS_EXACT.has(origin) || ORIGIN_ALLOWED.test(origin);
+}
 
 const LINT_TIMEOUT_MS = 30_000;
 /** Upper bound on notes tracked at once, to bound bridge memory. */
@@ -87,7 +110,7 @@ export async function createBridge({
     wss.on("connection", (socket, req) => {
         const origin = req.headers.origin;
 
-        if (origin && !ORIGIN_ALLOWED.test(origin)) {
+        if (!isOriginAllowed(origin)) {
             log("rejected connection from origin", origin);
             socket.close(1008, "origin not allowed");
             return;
