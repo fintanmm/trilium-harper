@@ -24,7 +24,9 @@ function loadFrontend() {
         // The script wires up listeners and starts a poll on load; stub the
         // surface it reaches for so loading has no side effects.
         document: {
-            addEventListener() {},
+            addEventListener(type, listener, options) {
+                (sandbox.documentListeners ??= []).push({ type, listener, options });
+            },
             createElement(tag) {
                 return {
                     tagName: String(tag).toUpperCase(),
@@ -62,6 +64,7 @@ function loadFrontend() {
             },
         },
         window: { innerWidth: 1280, innerHeight: 800, addEventListener() {} },
+        getComputedStyle: (node) => ({ backgroundColor: node.style?.backgroundColor ?? "rgba(0, 0, 0, 0)" }),
         setTimeout,
         setInterval: () => 0,
         clearInterval() {},
@@ -418,6 +421,17 @@ describe("frontend: stylesheet", () => {
         assert.match(overlay[0], /position: fixed/);
         assert.match(source, /document\.body\.appendChild\(this\.overlay\)/);
     });
+
+    it("styles the suggestion box as a floating card", () => {
+        const popover = source.match(/\.harper-popover \{[^}]*\}/);
+        assert.ok(popover, "expected a .harper-popover rule");
+        assert.match(popover[0], /border-radius: 10px/);
+        assert.match(popover[0], /box-shadow/);
+        assert.match(popover[0], /var\(--hp-surface/, "the box should take its colours from the sampled theme");
+        assert.match(source, /\.harper-popover button:focus-visible/);
+        assert.match(source, /\.harper-popover \.harper-empty \{/);
+        assert.match(source, /No suggestions for this finding\./);
+    });
 });
 
 describe("frontend: render", () => {
@@ -459,5 +473,61 @@ describe("frontend: render", () => {
         assert.equal(mark.dataset.severity, "4");
         assert.equal(mark.style.left, "100px", "marks use the client rect's viewport x");
         assert.equal(mark.style.top, "197px", "marks use the client rect's viewport y");
+    });
+});
+
+describe("frontend: suggestion box", () => {
+    async function attachSession(sandbox) {
+        const root = doc(para(["t", "hello world"]));
+        const editor = {
+            model: { document: { on() {}, off() {} } },
+            editing: { view: { document: { getRoot: () => root } } },
+        };
+        sandbox.api.getNoteContexts = () => [
+            { note: { noteId: "note-box", type: "text" }, getTextEditor: async () => editor },
+        ];
+        await sandbox.HarperTrilium.sync();
+        const session = sandbox.HarperTrilium.sessions.get("note-box");
+        assert.ok(session, "a session should attach to the open note");
+        return session;
+    }
+
+    it("dismisses an open box on Escape and leaves Escape alone otherwise", async () => {
+        const sandbox = loadFrontend();
+        const session = await attachSession(sandbox);
+
+        const keydown = sandbox.documentListeners.filter((entry) => entry.type === "keydown");
+        assert.ok(keydown.length > 0, "the script should listen for keys");
+        for (const { options } of keydown) {
+            assert.ok(options === true || options?.capture, "keys must be handled in the capture phase, before CKEditor");
+        }
+
+        const handler = keydown[0].listener;
+        const press = () => {
+            const calls = { prevented: false, stopped: false };
+            handler({
+                key: "Escape",
+                preventDefault: () => { calls.prevented = true; },
+                stopPropagation: () => { calls.stopped = true; },
+            });
+            return calls;
+        };
+
+        // Nothing open: Escape still belongs to the editor.
+        assert.deepEqual(press(), { prevented: false, stopped: false });
+
+        session.popover = sandbox.document.createElement("div");
+        assert.deepEqual(press(), { prevented: true, stopped: true });
+        assert.equal(session.popover, null, "Escape should close the box");
+    });
+
+    it("picks a palette from the background it floats over", () => {
+        const { paletteFor } = loadFrontend().HarperTrilium.pure;
+        const light = paletteFor(255, 255, 255);
+        const dark = paletteFor(18, 20, 26);
+
+        assert.equal(light["--hp-surface"], "#ffffff", "a white page gets the light palette");
+        assert.notEqual(dark["--hp-surface"], light["--hp-surface"], "a dark page gets the dark palette");
+        assert.deepEqual(Object.keys(light), Object.keys(dark), "both palettes set every property");
     });
 });

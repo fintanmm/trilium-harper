@@ -235,8 +235,63 @@ const CONFIG = {
         );
     }
 
+    /**
+     * Suggestion-box colours that match the page underneath.
+     *
+     * Trilium ships light and dark themes and the script cannot know which one
+     * is active, so the box samples the background it floats over and picks a
+     * palette from its luminance.
+     *
+     * @param {number} r 0-255
+     * @param {number} g 0-255
+     * @param {number} b 0-255
+     * @returns {object} CSS custom properties, ready to assign on the popover.
+     */
+    function paletteFor(r, g, b) {
+        // Rec. 709 relative luminance over the sRGB values computed styles give.
+        const channel = (c) => {
+            const v = c / 255;
+            return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+        };
+        const luminance = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+
+        return luminance > 0.4
+            ? {
+                  "--hp-surface": "#ffffff",
+                  "--hp-text": "#1c1f26",
+                  "--hp-muted": "#5b6470",
+                  "--hp-border": "rgba(15, 23, 42, .12)",
+                  "--hp-hover": "rgba(41, 128, 185, .14)",
+              }
+            : {
+                  "--hp-surface": "#1f2430",
+                  "--hp-text": "#e8ecf3",
+                  "--hp-muted": "#a7b0be",
+                  "--hp-border": "rgba(255, 255, 255, .14)",
+                  "--hp-hover": "rgba(96, 165, 250, .18)",
+              };
+    }
+
+    /**
+     * The first opaque background colour above `element`, because the editor
+     * itself is usually transparent and the theme lives on an ancestor.
+     *
+     * @param {Element} element
+     * @returns {[number, number, number]}
+     */
+    function backgroundOf(element) {
+        for (let node = element; node; node = node.parentElement) {
+            const raw = getComputedStyle(node).backgroundColor;
+            const match = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/.exec(raw ?? "");
+            if (!match) continue;
+            if (match[4] !== undefined && Number(match[4]) === 0) continue;
+            return [Number(match[1]), Number(match[2]), Number(match[3])];
+        }
+        return [255, 255, 255];
+    }
+
     /** Exposed for the unit tests, which drive these against a fake view tree. */
-    const pure = { buildWireText, positionToOffset, offsetToPosition };
+    const pure = { buildWireText, positionToOffset, offsetToPosition, paletteFor };
 
     /**
      * Orders two model positions, deepest path first, so a batch of edits can
@@ -375,17 +430,28 @@ const CONFIG = {
             .harper-overlay .harper-mark[data-severity="3"] { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='M0 2 q 1.5 -2 3 0 t 3 0' fill='none' stroke='%238e44ad' stroke-width='1'/></svg>"); }
             .harper-overlay .harper-mark[data-severity="4"] { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='M0 2 q 1.5 -2 3 0 t 3 0' fill='none' stroke='%232980b9' stroke-width='1'/></svg>"); }
             .harper-popover {
-                position: fixed; z-index: 1000; min-width: 180px; max-width: 340px;
-                background: #fff; color: #1a1a1a; border: 1px solid #d5d5d5; border-radius: 6px;
-                box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 4px 0; font-size: 13px;
+                position: fixed; z-index: 1000; min-width: 200px; max-width: 360px;
+                background: var(--hp-surface, #fff); color: var(--hp-text, #1c1f26);
+                border: 1px solid var(--hp-border, rgba(15, 23, 42, .12)); border-radius: 10px;
+                box-shadow: 0 12px 32px rgba(0,0,0,.24), 0 2px 8px rgba(0,0,0,.1);
+                padding: 6px; font-size: 13px; line-height: 1.45;
+            }
+            .harper-popover .harper-msg {
+                padding: 6px 10px 8px; margin-bottom: 4px; font-size: 12px;
+                color: var(--hp-muted, #5b6470);
+                border-bottom: 1px solid var(--hp-border, rgba(15, 23, 42, .1));
+            }
+            .harper-popover .harper-empty {
+                padding: 8px 10px; font-size: 12px; color: var(--hp-muted, #5b6470);
             }
             .harper-popover button {
                 display: block; width: 100%; text-align: left; background: none; border: 0;
-                padding: 6px 12px; cursor: pointer; font: inherit; color: inherit;
+                border-radius: 6px; padding: 7px 10px; cursor: pointer; font: inherit; color: inherit;
             }
-            .harper-popover button:hover, .harper-popover button:focus { background: #eef3fb; outline: none; }
-            .harper-popover .harper-sep { height: 1px; background: #e6e6e6; margin: 4px 0; }
-            .harper-popover .harper-msg { padding: 6px 12px; color: #666; font-size: 12px; }
+            .harper-popover button:hover, .harper-popover button:focus-visible {
+                background: var(--hp-hover, rgba(41, 128, 185, .14)); outline: none;
+            }
+            .harper-popover .harper-sep { height: 1px; background: var(--hp-border, rgba(15, 23, 42, .1)); margin: 4px 8px; }
         `;
         document.head.appendChild(style);
     }
@@ -538,7 +604,14 @@ const CONFIG = {
 
                 let drawn = 0;
                 for (const rect of domRange.getClientRects()) {
-                    if (rect.width === 0 && rect.height === 0) continue;
+                    // A collapsed range yields a rect with no width: it would
+                    // otherwise be counted as drawn while painting nothing.
+                    if (rect.width <= 0 || rect.height <= 0) {
+                        if (fresh) {
+                            log(`empty rect for: ${lint.message} (w=${rect.width} h=${rect.height})`);
+                        }
+                        continue;
+                    }
                     const mark = document.createElement("div");
                     mark.className = "harper-mark";
                     mark.dataset.severity = String(lint.severity ?? 3);
@@ -587,6 +660,10 @@ const CONFIG = {
             this.hidePopover();
             const popover = document.createElement("div");
             popover.className = "harper-popover";
+            // Match the theme Trilium is actually running, not a hardcoded one.
+            for (const [name, value] of Object.entries(paletteFor(...backgroundOf(document.body)))) {
+                popover.style.setProperty(name, value);
+            }
 
             const message = document.createElement("div");
             message.className = "harper-msg";
@@ -624,6 +701,13 @@ const CONFIG = {
                         }
                     }),
                 );
+            }
+
+            if (edits.length === 0 && commands.length === 0) {
+                const empty = document.createElement("div");
+                empty.className = "harper-empty";
+                empty.textContent = "No suggestions for this finding.";
+                popover.appendChild(empty);
             }
 
             document.body.appendChild(popover);
@@ -772,15 +856,30 @@ const CONFIG = {
     document.addEventListener("scroll", reposition, true);
     window.addEventListener("resize", reposition);
 
-    // Ctrl/Cmd-. toggles all squiggles, matching common editor conventions.
-    document.addEventListener("keydown", (event) => {
-        if ((event.ctrlKey || event.metaKey) && event.key === ".") {
-            event.preventDefault();
-            for (const session of sessions.values()) {
-                session.overlay.style.display = session.overlay.style.display === "none" ? "" : "none";
+    // Capture phase: CKEditor handles keys inside the editable first and stops
+    // propagation, so a bubble-phase listener would never see Escape.
+    // Escape dismisses the suggestion box; Ctrl/Cmd-. toggles squiggles.
+    document.addEventListener(
+        "keydown",
+        (event) => {
+            if (event.key === "Escape") {
+                const open = [...sessions.values()].filter((session) => session.popover);
+                if (open.length === 0) return;
+                for (const session of open) session.hidePopover();
+                event.preventDefault();
+                event.stopPropagation();
+                log(`suggestion box dismissed with Escape (${open.length} open)`);
+                return;
             }
-        }
-    });
+            if ((event.ctrlKey || event.metaKey) && event.key === ".") {
+                event.preventDefault();
+                for (const session of sessions.values()) {
+                    session.overlay.style.display = session.overlay.style.display === "none" ? "" : "none";
+                }
+            }
+        },
+        true,
+    );
 
     global.HarperTrilium = { CONFIG, pure, bridge, sessions, sync, log, dispose: () => clearInterval(poll) };
 })(typeof window !== "undefined" ? window : globalThis);
