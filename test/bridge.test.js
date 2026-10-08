@@ -224,11 +224,40 @@ describe("bridge", { skip: HAS_HARPER_LS ? false : "harper-ls not installed" }, 
         assert.equal(code, 1008, "should be closed as a policy violation");
     });
 
-    // Last: connecting a new client replaces the shared `socket` above.
     it("accepts the Trilium desktop app's custom-scheme origin", async () => {
         const desktop = await open(`${bridge.url}?token=test-token`, { origin: "trilium-app://app" });
         const welcome = await waitFor((m) => m.type === ServerMessage.WELCOME);
         assert.equal(welcome.protocolVersion, PROTOCOL_VERSION);
         desktop.close();
+    });
+
+    // Last: each Trilium window runs its own copy of the frontend, so a
+    // newcomer must not evict the client already connected — that thrash left
+    // neither window holding the socket long enough to lint.
+    it("keeps two clients connected at the same time", async () => {
+        const second = await open(`${bridge.url}?token=test-token`, { origin: "trilium-app://app" });
+        const welcome = await waitFor((m) => m.type === ServerMessage.WELCOME);
+        assert.equal(welcome.protocolVersion, PROTOCOL_VERSION);
+
+        const firstSurvived = await new Promise((resolve) => {
+            const timer = setTimeout(() => resolve(true), 300);
+            socket.once("close", () => {
+                clearTimeout(timer);
+                resolve(false);
+            });
+        });
+        assert.ok(firstSurvived, "the first client must not be evicted by a newcomer");
+
+        // The newcomer is a full participant, not just greeted.
+        const id = nextRequestId++;
+        const reply = waitFor((m) => m.id === id);
+        second.send(
+            JSON.stringify({ type: ClientMessage.LINT, id, noteId: "note-second-client", text: "Zorbulax is wibbly." }),
+        );
+        const result = await reply;
+        assert.equal(result.type, ServerMessage.LINT_RESULT);
+        assert.equal(result.noteId, "note-second-client");
+
+        second.close();
     });
 });

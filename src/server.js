@@ -155,6 +155,11 @@ export async function createBridge({
 
     /** @type {Set<WebSocket>} */
     const clients = new Set();
+    /**
+     * Monotonic per-connection id. Two Trilium windows run their own copy of
+     * the frontend, and without an id the journal cannot tell them apart.
+     */
+    let clientSeq = 0;
     /** noteId -> uri, so `close` can work without the client resending the uri. */
     const noteUris = new Map();
 
@@ -178,13 +183,16 @@ export async function createBridge({
             return;
         }
 
-        log(`client connected (origin=${origin ?? "none"} from=${from})`);
+        const clientId = ++clientSeq;
+        log(`client #${clientId} connected (origin=${origin ?? "none"} from=${from})`);
 
-        // One editor at a time: two clients would fight over harper-ls document state.
-        for (const other of clients) {
-            other.close(1000, "replaced by a newer client");
-        }
+        // Several clients are allowed: a second Trilium window runs its own
+        // frontend, and evicting the previous socket made the two of them kick
+        // each other off every retry interval, so neither ever held the
+        // connection long enough to lint. Document state cannot diverge
+        // because every lint pushes the whole text for its own URI first.
         clients.add(socket);
+        socket.harperClientId = clientId;
 
         socket.send(
             JSON.stringify({
@@ -218,7 +226,10 @@ export async function createBridge({
         socket.on("close", (code, reason) => {
             clients.delete(socket);
             const why = String(reason ?? "").trim();
-            log(`client disconnected (code=${code}${why ? ` reason=${why}` : ""}; ${clients.size} remaining)`);
+            log(
+                `client #${socket.harperClientId} disconnected ` +
+                    `(code=${code}${why ? ` reason=${why}` : ""}; ${clients.size} total)`,
+            );
         });
 
         socket.on("error", (err) => error("socket error:", err.message));

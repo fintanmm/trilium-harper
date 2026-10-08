@@ -136,7 +136,7 @@ Both halves log verbosely by default so a first run explains itself.
 **Bridge** — one line per event, prefixed with an ISO timestamp:
 
 ```
-[2026-10-08T16:07:54.123Z] client connected (origin=trilium-app://app from=127.0.0.1:53422)
+[2026-10-08T16:07:54.123Z] client #1 connected (origin=trilium-app://app from=127.0.0.1:53422)
 [2026-10-08T16:07:56.456Z] ← lint id=3 note=leazLFgRGjQm chars=412
 [2026-10-08T16:07:56.489Z] → lint note=leazLFgRGjQm chars=412 in 33ms: 2 findings
 [2026-10-08T16:07:56.489Z]    Subject-verb agreement @0:12 | Possible typo @1:4
@@ -145,6 +145,11 @@ Both halves log verbosely by default so a first run explains itself.
 `←` is a request received, `→` a result produced, `WARN`/`ERROR` mark the
 things worth scrolling to. Note contents are never logged — only lengths,
 line/column positions, and the finding messages themselves.
+
+Connections carry a `client #N` id plus their address, so if two Trilium
+windows are both running the frontend the journal shows which one is talking.
+A healthy run is one `connected` line with no repeating `disconnected` lines
+every few seconds.
 
 Levels: `debug` (everything) → `info` (connect, disconnect, rejections) →
 `warn` → `error`. Quiet it down once things work:
@@ -175,8 +180,10 @@ It also:
 - requires the token on every connection (`?token=…`);
 - accepts only the Trilium desktop app's `trilium-app://app` origin plus
   loopback, LAN, and private-range `Origin` headers;
-- allows **one** editor client at a time, since two tabs would fight over the
-  language server's document state.
+- allows several editor clients at once — each Trilium window runs its own
+  copy of the frontend, and they cannot corrupt the language server's document
+  state because every lint pushes the complete text for its own URI before
+  asking for diagnostics.
 
 `ws://` is fine when Trilium is served over plain HTTP, which is the normal local
 setup. If your Trilium is served over HTTPS, the browser will block a `ws://`
