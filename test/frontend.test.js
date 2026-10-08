@@ -25,10 +25,41 @@ function loadFrontend() {
         // surface it reaches for so loading has no side effects.
         document: {
             addEventListener() {},
-            createElement: () => ({ style: {}, dataset: {}, appendChild() {}, remove() {}, addEventListener() {} }),
+            createElement(tag) {
+                return {
+                    tagName: String(tag).toUpperCase(),
+                    style: {},
+                    dataset: {},
+                    children: [],
+                    parentElement: null,
+                    className: "",
+                    title: "",
+                    get childElementCount() {
+                        return this.children.length;
+                    },
+                    appendChild(child) {
+                        child.parentElement = this;
+                        this.children.push(child);
+                        return child;
+                    },
+                    remove() {
+                        if (!this.parentElement) return;
+                        const siblings = this.parentElement.children;
+                        siblings.splice(siblings.indexOf(this), 1);
+                        this.parentElement = null;
+                    },
+                    addEventListener() {},
+                };
+            },
             getElementById: () => null,
             head: { appendChild() {} },
-            body: { appendChild() {} },
+            body: null,
+            contains(node) {
+                for (let current = node; current; current = current.parentElement) {
+                    if (current === sandbox.document.body) return true;
+                }
+                return false;
+            },
         },
         window: { innerWidth: 1280, innerHeight: 800, addEventListener() {} },
         setTimeout,
@@ -47,7 +78,8 @@ function loadFrontend() {
     sandbox.window = sandbox;
     createContext(sandbox);
     runInContext(readFileSync(SCRIPT, "utf8"), sandbox, { filename: SCRIPT });
-    return sandbox.HarperTrilium.pure;
+    sandbox.document.body = sandbox.document.createElement("body");
+    return sandbox;
 }
 
 /* ── a stand-in for CKEditor's view tree, mirroring the real API ────────────
@@ -90,7 +122,8 @@ function doc(...blocks) {
     return el("root", blocks);
 }
 
-const { buildWireText, positionToOffset, offsetToPosition } = loadFrontend();
+const frontend = loadFrontend();
+const { buildWireText, positionToOffset, offsetToPosition } = frontend.HarperTrilium.pure;
 
 describe("frontend: buildWireText", () => {
     it("joins blocks with newlines and records no offset drift", () => {
@@ -375,5 +408,56 @@ describe("frontend: stylesheet", () => {
                 `no rule for severity ${severity}`,
             );
         }
+    });
+
+    it("fixes the overlay to the viewport", () => {
+        // CKEditor owns its editable subtree and evicts foreign children, so
+        // the overlay lives on the body and must not scroll with the host.
+        const overlay = source.match(/\.harper-overlay \{[^}]*\}/);
+        assert.ok(overlay, "expected a .harper-overlay rule");
+        assert.match(overlay[0], /position: fixed/);
+        assert.match(source, /document\.body\.appendChild\(this\.overlay\)/);
+    });
+});
+
+describe("frontend: render", () => {
+    it("draws marks on a body-level overlay in viewport coordinates", async () => {
+        const sandbox = loadFrontend();
+        const root = doc(para(["t", "hello world"]));
+        const { text: wire, segments } = buildWireText(root);
+        const clientRect = { left: 100, right: 160, top: 188, bottom: 200, width: 60, height: 12 };
+
+        const editor = {
+            model: { document: { on() {}, off() {} } },
+            editing: {
+                view: {
+                    document: { getRoot: () => root },
+                    createPositionAt: (parent, offset) => ({ parent, offset }),
+                    createRange: (start, end) => ({ start, end }),
+                    domConverter: { viewRangeToDom: () => ({ getClientRects: () => [clientRect] }) },
+                },
+            },
+        };
+
+        sandbox.api.getNoteContexts = () => [
+            { note: { noteId: "note-render", type: "text" }, getTextEditor: async () => editor },
+        ];
+        await sandbox.HarperTrilium.sync();
+
+        const session = sandbox.HarperTrilium.sessions.get("note-render");
+        assert.ok(session, "a session should attach to the open note");
+
+        session.render(
+            [{ message: "a finding", severity: 4, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } } }],
+            { text: wire, segments },
+        );
+
+        assert.equal(session.overlay.parentElement, sandbox.document.body, "the overlay belongs to the body, not CKEditor's editable");
+        assert.equal(session.overlay.childElementCount, 1, "one mark was drawn");
+
+        const mark = session.overlay.children[0];
+        assert.equal(mark.dataset.severity, "4");
+        assert.equal(mark.style.left, "100px", "marks use the client rect's viewport x");
+        assert.equal(mark.style.top, "197px", "marks use the client rect's viewport y");
     });
 });

@@ -362,7 +362,7 @@ const CONFIG = {
         const style = document.createElement("style");
         style.id = "harper-overlay-style";
         style.textContent = `
-            .harper-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 20; overflow: hidden; }
+            .harper-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 20; overflow: hidden; }
             .harper-overlay .harper-mark {
                 position: absolute; pointer-events: auto; cursor: pointer;
                 background-repeat: repeat-x; background-size: 6px 3px; border-radius: 1px;
@@ -420,22 +420,21 @@ const CONFIG = {
             log(`session disposed: note=${this.noteId}`);
         }
 
-        /** The element the overlay should be positioned inside. */
+        /**
+         * Keeps the overlay parked on `document.body`.
+         *
+         * It used to live inside CKEditor's editable, which owns that subtree
+         * and evicts foreign children on its next render — the marks survived
+         * in the overlay but the overlay itself was no longer in the document,
+         * so nothing could be seen. Body-level marks use viewport coordinates
+         * directly, like the popover already does.
+         */
         attachOverlay() {
-            const editable = this.editor.editing.view.document.getRoot();
-            const host = this.editor.editing.view.getDomRoot() ?? this.editor.editing.view.domConverter.viewToDom(editable);
-            if (!host) {
-                once(`host:${this.noteId}`, `no overlay host for note=${this.noteId} — squiggles cannot be drawn`);
-                return;
+            if (!document.body) return;
+            if (this.overlay.parentElement !== document.body) document.body.appendChild(this.overlay);
+            if (!document.contains(this.overlay)) {
+                once(`overlay:${this.noteId}`, `overlay for note=${this.noteId} is not in the document`);
             }
-            // `inset: 0` only reaches the host when the host itself is the
-            // containing block; `offsetParent` stays non-null for a visible
-            // static element, so keying off it left the overlay anchored to a
-            // distant ancestor and the marks off their text.
-            if (getComputedStyle(host).position === "static") {
-                host.style.position = "relative";
-            }
-            if (this.overlay.parentElement !== host) host.appendChild(this.overlay);
         }
 
         scheduleLint() {
@@ -506,10 +505,9 @@ const CONFIG = {
                 return;
             }
 
+            // The overlay is fixed to the viewport, so client rects are used as
+            // they come — no host to subtract.
             const view = this.editor.editing.view;
-            const host = this.overlay.parentElement;
-            if (!host) return;
-            const base = host.getBoundingClientRect();
 
             let marks = 0;
             let unmapped = 0;
@@ -545,8 +543,8 @@ const CONFIG = {
                     mark.className = "harper-mark";
                     mark.dataset.severity = String(lint.severity ?? 3);
                     mark.title = lint.message;
-                    mark.style.left = `${rect.left - base.left}px`;
-                    mark.style.top = `${rect.bottom - base.top - 3}px`;
+                    mark.style.left = `${rect.left}px`;
+                    mark.style.top = `${rect.bottom - 3}px`;
                     mark.style.width = `${rect.width}px`;
                     mark.style.height = "3px";
                     mark.addEventListener("mousedown", (event) => {
