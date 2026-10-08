@@ -32,10 +32,28 @@ const CONFIG = {
     MAX_LENGTH: 200_000,
     /** Show a dot in the toolbar when the bridge is unreachable. */
     SHOW_STATUS: true,
+    /** Console output in the Trilium devtools. Set false once it all works. */
+    DEBUG: true,
 };
 
 (function bootstrap(global) {
     "use strict";
+
+    /* ───────────────────────── logging ───────────────────────── */
+
+    /** Everything the script does, gated on `CONFIG.DEBUG`. */
+    const log = (...args) => {
+        if (CONFIG.DEBUG) console.log("[harper]", ...args);
+    };
+    /** Genuine failures — still printed with `DEBUG` off. */
+    const logError = (...args) => console.error("[harper]", ...args);
+    /** Log only the first time something happens for a given note. */
+    const once = (key, ...args) => {
+        if (once.seen.has(key)) return;
+        once.seen.add(key);
+        log(...args);
+    };
+    once.seen = new Set();
 
     /* ───────────────────────── pure helpers ───────────────────────── */
 
@@ -204,31 +222,37 @@ const CONFIG = {
         }
 
         connect() {
-            const url =
-                `ws://${this.config.HOST}:${this.config.PORT}` +
-                `?token=${encodeURIComponent(this.config.TOKEN)}`;
+            const origin = `ws://${this.config.HOST}:${this.config.PORT}`;
+            const url = `${origin}?token=${encodeURIComponent(this.config.TOKEN)}`;
+            log("connecting to", origin);
 
             let socket;
             try {
                 socket = new WebSocket(url);
             } catch (err) {
+                logError("could not create WebSocket:", err.message);
                 this.onStatus("unreachable");
                 return;
             }
 
             socket.onopen = () => {
                 this.connected = true;
+                log("connected to", origin);
                 this.onStatus("connected");
             };
-            socket.onclose = () => {
+            socket.onclose = (event) => {
                 this.connected = false;
+                log(`closed (code=${event.code}); retrying in 3s`);
                 this.onStatus("disconnected");
                 // A note switch can leave the bridge holding our document.
                 for (const { reject } of this.pending.values()) reject(new Error("bridge closed"));
                 this.pending.clear();
                 setTimeout(() => this.connect(), 3000);
             };
-            socket.onerror = () => this.onStatus("error");
+            socket.onerror = () => {
+                logError(`socket error talking to ${origin} — is the bridge running?`);
+                this.onStatus("error");
+            };
             socket.onmessage = (event) => this._onMessage(event.data);
 
             this.socket = socket;
@@ -239,27 +263,46 @@ const CONFIG = {
             try {
                 msg = JSON.parse(raw);
             } catch {
+                logError("could not parse a message from the bridge");
                 return;
             }
-            if (typeof msg.id !== "number") return;
+            if (typeof msg.id !== "number") {
+                log("ignoring a message with no id:", msg.type);
+                return;
+            }
             const entry = this.pending.get(msg.id);
-            if (!entry) return;
+            if (!entry) {
+                log(`no pending request for id=${msg.id} (${msg.type})`);
+                return;
+            }
             this.pending.delete(msg.id);
-            if (msg.type === "error") entry.reject(new Error(msg.message));
-            else entry.resolve(msg);
+            if (msg.type === "error") {
+                logError(`bridge error for ${entry.type} id=${msg.id}:`, msg.message);
+                entry.reject(new Error(msg.message));
+            } else {
+                log(`← ${entry.type} id=${msg.id}`);
+                entry.resolve(msg);
+            }
         }
 
         request(type, payload, timeoutMs = 30_000) {
             return new Promise((resolve, reject) => {
                 if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+                    logError(`cannot send ${type}: bridge not connected`);
                     reject(new Error("bridge not connected"));
                     return;
                 }
                 const id = this.nextId++;
-                this.pending.set(id, { resolve, reject });
+                const chars = typeof payload?.text === "string" ? ` chars=${payload.text.length}` : "";
+                const note = payload?.noteId ? ` note=${payload.noteId}` : "";
+                log(`→ ${type} id=${id}${note}${chars}`);
+                this.pending.set(id, { resolve, reject, type });
                 this.socket.send(JSON.stringify({ type, id, ...payload }));
                 setTimeout(() => {
-                    if (this.pending.delete(id)) reject(new Error(`${type} timed out`));
+                    if (this.pending.delete(id)) {
+                        logError(`${type} id=${id} timed out after ${timeoutMs}ms`);
+                        reject(new Error(`${type} timed out`));
+                    }
                 }, timeoutMs).unref?.();
             });
         }
@@ -318,6 +361,7 @@ const CONFIG = {
                 this.scheduleLint();
             };
             editor.model.document.on("change:data", this._onModelChange);
+            log(`session attached: note=${noteId}`);
         }
 
         dispose() {
@@ -325,13 +369,17 @@ const CONFIG = {
             clearTimeout(this.debounceTimer);
             this.overlay.remove();
             this.hidePopover();
+            log(`session disposed: note=${this.noteId}`);
         }
 
         /** The element the overlay should be positioned inside. */
         attachOverlay() {
             const editable = this.editor.editing.view.document.getRoot();
             const host = this.editor.editing.view.getDomRoot() ?? this.editor.editing.view.domConverter.viewToDom(editable);
-            if (!host) return;
+            if (!host) {
+                once(`host:${this.noteId}`, `no overlay host for note=${this.noteId} — squiggles cannot be drawn`);
+                return;
+            }
             if (host.offsetParent === null && getComputedStyle(host).position === "static") {
                 host.style.position = "relative";
             }
@@ -350,6 +398,10 @@ const CONFIG = {
                 snapshot.text.trim().length < CONFIG.MIN_LENGTH ||
                 snapshot.text.length > CONFIG.MAX_LENGTH
             ) {
+                log(
+                    `lint skipped for note=${this.noteId}: ` +
+                        `${snapshot.text.length} chars (min ${CONFIG.MIN_LENGTH}, max ${CONFIG.MAX_LENGTH})`,
+                );
                 this.render([], snapshot);
                 return;
             }
@@ -366,14 +418,23 @@ const CONFIG = {
                     text: snapshot.text,
                 });
             } catch (err) {
+                logError(`lint failed for note=${this.noteId}:`, err.message);
                 if (CONFIG.SHOW_STATUS) api.showError(`Harper: ${err.message}`);
                 return;
             }
 
-            if (this.revision !== requestedRevision) return;
+            if (this.revision !== requestedRevision) {
+                log(`dropping stale lint for note=${this.noteId} (revision ${requestedRevision} != ${this.revision})`);
+                return;
+            }
 
+            const lints = reply.lints ?? [];
+            log(
+                `lint note=${this.noteId}: ${lints.length} finding${lints.length === 1 ? "" : "s"}` +
+                    `${reply.durationMs !== undefined ? ` in ${reply.durationMs}ms` : ""}`,
+            );
             this.snapshot = snapshot;
-            this.render(reply.lints ?? [], snapshot);
+            this.render(lints, snapshot);
         }
 
         render(lints, snapshot) {
@@ -381,20 +442,47 @@ const CONFIG = {
             this.lints = lints;
             this.overlay.textContent = "";
             this.attachOverlay();
-            if (!current) return;
+
+            // Scroll and resize redraw too; only report a fresh lint result.
+            const fresh = this._lastRendered !== lints;
+            this._lastRendered = lints;
+
+            if (!current) {
+                if (fresh && lints.length > 0) {
+                    log(`render: ${lints.length} finding(s) but no snapshot — nothing drawn`);
+                }
+                return;
+            }
 
             const view = this.editor.editing.view;
             const host = this.overlay.parentElement;
             if (!host) return;
             const base = host.getBoundingClientRect();
 
+            let marks = 0;
+            let unmapped = 0;
+
             for (const [index, lint] of lints.entries()) {
                 const range = toViewRange(view, current.segments, current.text, lint.range);
-                if (!range) continue;
+                if (!range) {
+                    unmapped += 1;
+                    if (fresh) {
+                        log(
+                            `no view range for: ${lint.message} ` +
+                                `@${lint.range.start.line}:${lint.range.start.character}`,
+                        );
+                    }
+                    continue;
+                }
 
                 const domRange = view.domConverter.viewRangeToDom(range);
-                if (!domRange) continue;
+                if (!domRange) {
+                    unmapped += 1;
+                    if (fresh) log(`view range with no DOM range for: ${lint.message}`);
+                    continue;
+                }
 
+                let drawn = 0;
                 for (const rect of domRange.getClientRects()) {
                     if (rect.width === 0 && rect.height === 0) continue;
                     const mark = document.createElement("div");
@@ -410,7 +498,19 @@ const CONFIG = {
                         this.showFixes(index, rect);
                     });
                     this.overlay.appendChild(mark);
+                    drawn += 1;
                 }
+                if (fresh && drawn === 0) {
+                    log(`finding drew no squiggle (no client rects): ${lint.message}`);
+                }
+                marks += drawn;
+            }
+
+            if (fresh) {
+                log(
+                    `render note=${this.noteId}: ${lints.length} finding(s) → ${marks} mark(s)` +
+                        (unmapped ? `, ${unmapped} unmapped` : ""),
+                );
             }
         }
 
@@ -425,6 +525,7 @@ const CONFIG = {
                     range: lint.range,
                 });
             } catch (err) {
+                logError(`codeAction failed for note=${this.noteId}:`, err.message);
                 api.showError(`Harper: ${err.message}`);
                 return;
             }
@@ -446,6 +547,7 @@ const CONFIG = {
 
             const edits = reply.actions.filter((a) => a.kind === "edit");
             const commands = reply.actions.filter((a) => a.kind === "command");
+            log(`code actions note=${this.noteId}: ${edits.length} edit(s), ${commands.length} command(s)`);
 
             for (const action of edits) {
                 popover.appendChild(this.menuItem(action.title, () => this.applyEdit(action)));
@@ -463,6 +565,7 @@ const CONFIG = {
                             });
                             this.scheduleLint();
                         } catch (err) {
+                            logError(`command ${action.command} failed:`, err.message);
                             api.showError(`Harper: ${err.message}`);
                         }
                     }),
@@ -512,7 +615,10 @@ const CONFIG = {
                 })
                 .filter(Boolean);
 
-            if (edits.length === 0) return;
+            if (edits.length === 0) {
+                log(`fix "${action.title}" mapped to no edits for note=${this.noteId}`);
+                return;
+            }
 
             // Back to front, so replacing an earlier range cannot shift a later
             // one out from under us.
@@ -524,6 +630,7 @@ const CONFIG = {
                     writer.insertText(edit.newText, edit.modelRange.start);
                 }
             });
+            log(`applied ${edits.length} edit(s): ${JSON.stringify(edits.map((e) => e.newText))}`);
 
             // Tell Harper the lint was acted on, for its statistics.
             if (action.then) {
@@ -574,7 +681,10 @@ const CONFIG = {
                 if (sessions.has(note.noteId)) continue;
 
                 const editor = await noteContext.getTextEditor();
-                if (!editor || !editor.model) continue;
+                if (!editor || !editor.model) {
+                    once(`editor:${note.noteId}`, `waiting for a text editor on note=${note.noteId}`);
+                    continue;
+                }
 
                 sessions.set(note.noteId, new Session(note.noteId, noteContext, editor));
             }
@@ -586,10 +696,15 @@ const CONFIG = {
             }
         } catch (err) {
             // The API is unavailable during Trilium's own teardown; ignore.
+            log("sync skipped:", err?.message ?? err);
         }
     }
 
     bridge.onStatus = setStatus;
+    log(
+        `frontend starting: bridge=ws://${CONFIG.HOST}:${CONFIG.PORT} ` +
+            `debounce=${CONFIG.DEBOUNCE_MS}ms min=${CONFIG.MIN_LENGTH} chars debug=${CONFIG.DEBUG}`,
+    );
     bridge.connect();
 
     // Attach to whatever is open now, and keep up as tabs come and go.
@@ -613,5 +728,5 @@ const CONFIG = {
         }
     });
 
-    global.HarperTrilium = { CONFIG, pure, bridge, sessions, sync, dispose: () => clearInterval(poll) };
+    global.HarperTrilium = { CONFIG, pure, bridge, sessions, sync, log, dispose: () => clearInterval(poll) };
 })(typeof window !== "undefined" ? window : globalThis);

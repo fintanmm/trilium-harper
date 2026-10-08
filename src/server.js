@@ -56,6 +56,47 @@ const LINT_TIMEOUT_MS = 30_000;
 const MAX_OPEN_NOTES = 64;
 
 /**
+ * Verbosity levels, most talkative last.
+ *
+ * `debug` is the default so a first run explains itself end to end; once the
+ * squiggles work, `HARPER_BRIDGE_LOG=info` quiets it back down to lifecycle
+ * events only. `HARPER_BRIDGE_LOG=warn` goes quieter still.
+ */
+const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
+
+/**
+ * A one-line summary of a client message, for logging. Never includes `text`:
+ * note contents should not end up in the journal.
+ *
+ * @param {object} msg
+ * @returns {string}
+ */
+function describeMessage(msg) {
+    const bits = [];
+    if (msg.noteId) bits.push(`note=${msg.noteId}`);
+    if (msg.uri) bits.push(`uri=${msg.uri}`);
+    if (typeof msg.text === "string") bits.push(`chars=${msg.text.length}`);
+    if (msg.range) {
+        const { start, end } = msg.range;
+        bits.push(`range=${start.line}:${start.character}-${end.line}:${end.character}`);
+    }
+    if (msg.name) bits.push(`name=${msg.name}`);
+    if (msg.type === "close") bits.push("closing");
+    return bits.join(" ");
+}
+
+/** Findings condensed to `message @line:col` so a lint result stays one line. */
+function describeLints(lints, max = 5) {
+    const shown = lints.slice(0, max).map((lint) => {
+        const start = lint?.range?.start;
+        const where = start ? ` @${start.line}:${start.character}` : "";
+        return `${lint?.message ?? "?"}${where}`;
+    });
+    const more = lints.length > max ? ` (+${lints.length - max} more)` : "";
+    return shown.join(" | ") + more;
+}
+
+/**
  * Starts the bridge.
  *
  * @param {object} [options]
@@ -67,6 +108,8 @@ const MAX_OPEN_NOTES = 64;
  * @param {object} [options.config] Extra `harper-ls` config overrides, layered
  *   over the defaults in `buildConfig`.
  * @param {(...args: unknown[]) => void} [options.onLog]
+ * @param {string} [options.logLevel] `error` | `warn` | `info` | `debug`.
+ *   Defaults to `$HARPER_BRIDGE_LOG`, then `debug`.
  */
 export async function createBridge({
     host = "127.0.0.1",
@@ -75,9 +118,21 @@ export async function createBridge({
     token = process.env.HARPER_BRIDGE_TOKEN ?? randomBytes(24).toString("base64url"),
     binary,
     config = {},
+    logLevel = process.env.HARPER_BRIDGE_LOG ?? "debug",
     onLog = (...args) => console.log(`[${new Date().toISOString()}]`, ...args),
 } = {}) {
     const log = (...args) => onLog(...args);
+    const level = LOG_LEVELS[String(logLevel).toLowerCase()] ?? LOG_LEVELS.debug;
+    /** Every request in, every result out — the level you debug with. */
+    const debug = (...args) => {
+        if (level >= LOG_LEVELS.debug) onLog(...args);
+    };
+    const warn = (...args) => {
+        if (level >= LOG_LEVELS.warn) onLog("WARN", ...args);
+    };
+    const error = (...args) => {
+        if (level >= LOG_LEVELS.error) onLog("ERROR", ...args);
+    };
 
     ensureWorkspace(workspaceDir);
 
@@ -104,25 +159,26 @@ export async function createBridge({
     const noteUris = new Map();
 
     wss.on("error", (err) => {
-        log("server error:", err.message);
+        error("server error:", err.message);
     });
 
     wss.on("connection", (socket, req) => {
         const origin = req.headers.origin;
+        const from = `${req.socket.remoteAddress}:${req.socket.remotePort}`;
 
         if (!isOriginAllowed(origin)) {
-            log("rejected connection from origin", origin);
+            warn(`rejected connection from ${from}: origin ${origin ?? "none"} not allowed`);
             socket.close(1008, "origin not allowed");
             return;
         }
 
         if (!isAuthorized(req.url, token)) {
-            log("rejected unauthorized connection");
+            warn(`rejected unauthorized connection from ${from}`);
             socket.close(1008, "unauthorized");
             return;
         }
 
-        log(`client connected (origin=${origin ?? "none"})`);
+        log(`client connected (origin=${origin ?? "none"} from=${from})`);
 
         // One editor at a time: two clients would fight over harper-ls document state.
         for (const other of clients) {
@@ -144,25 +200,28 @@ export async function createBridge({
         );
 
         socket.on("message", (raw) => {
-            const msg = parseClientMessage(raw.toString());
+            const body = raw.toString();
+            const msg = parseClientMessage(body);
             if (!msg) {
-                log("ignoring malformed message");
+                warn("ignoring malformed message:", body.slice(0, 200));
                 return;
             }
+            debug("←", msg.type, `id=${msg.id ?? "-"}`, describeMessage(msg));
             handle(socket, msg).catch((err) => {
-                log("handler error:", err);
+                error(`${msg.type} failed:`, err.stack ?? err.message);
                 if (msg.id !== undefined) {
                     send(socket, { type: ServerMessage.ERROR, id: msg.id, message: err.message });
                 }
             });
         });
 
-        socket.on("close", () => {
+        socket.on("close", (code, reason) => {
             clients.delete(socket);
-            log(`client disconnected (${clients.size} remaining)`);
+            const why = String(reason ?? "").trim();
+            log(`client disconnected (code=${code}${why ? ` reason=${why}` : ""}; ${clients.size} remaining)`);
         });
 
-        socket.on("error", (err) => log("socket error:", err.message));
+        socket.on("error", (err) => error("socket error:", err.message));
     });
 
     async function handle(socket, msg) {
@@ -178,6 +237,14 @@ export async function createBridge({
 
                 const startedAt = Date.now();
                 const lints = await harper.lint(uri, msg.text, LINT_TIMEOUT_MS);
+                const durationMs = Date.now() - startedAt;
+
+                debug(
+                    `→ lint note=${msg.noteId} chars=${msg.text.length}`,
+                    `in ${durationMs}ms:`,
+                    `${lints.length} finding${lints.length === 1 ? "" : "s"}`,
+                );
+                if (lints.length > 0) debug("  ", describeLints(lints));
 
                 send(socket, {
                     type: ServerMessage.LINT_RESULT,
@@ -185,14 +252,19 @@ export async function createBridge({
                     noteId: msg.noteId,
                     uri,
                     lints,
-                    durationMs: Date.now() - startedAt,
+                    durationMs,
                 });
                 return;
             }
 
             case ClientMessage.CODE_ACTION: {
                 const uri = resolveUri(msg);
+                const startedAt = Date.now();
                 const actions = await harper.codeAction(uri, msg.range);
+                debug(
+                    `→ codeAction note=${msg.noteId} in ${Date.now() - startedAt}ms:`,
+                    `${actions.length} action${actions.length === 1 ? "" : "s"}`,
+                );
                 send(socket, {
                     type: ServerMessage.CODE_ACTION_RESULT,
                     id: msg.id,
@@ -205,13 +277,19 @@ export async function createBridge({
 
             case ClientMessage.COMMAND: {
                 await harper.executeCommand(msg.name, msg.args);
+                debug(`→ command name=${msg.name} done`);
                 send(socket, { type: ServerMessage.COMMAND_RESULT, id: msg.id, name: msg.name });
                 return;
             }
 
             case ClientMessage.CLOSE:
+                debug(`→ close note=${msg.noteId}`);
                 harper.close(noteUris.get(msg.noteId) ?? noteUri(msg.noteId, workspaceDir));
                 noteUris.delete(msg.noteId);
+                return;
+
+            default:
+                warn("unhandled message type:", msg.type);
                 return;
         }
     }
@@ -224,11 +302,13 @@ export async function createBridge({
     /** Closes the least recently linted notes once the cap is exceeded. */
     function evictStaleNotes() {
         if (noteUris.size <= MAX_OPEN_NOTES) return;
+        const before = noteUris.size;
         for (const [noteId, uri] of noteUris) {
             if (noteUris.size <= MAX_OPEN_NOTES) break;
             harper.close(uri);
             noteUris.delete(noteId);
         }
+        debug(`evicted ${before - noteUris.size} note(s), ${noteUris.size} still open`);
     }
 
     await new Promise((resolve, reject) => {
@@ -296,6 +376,7 @@ async function main() {
     process.on("SIGTERM", () => shutdown("SIGTERM"));
 
     log("bridge listening on", bridge.url);
+    log("log level:", process.env.HARPER_BRIDGE_LOG ?? "debug", "(set HARPER_BRIDGE_LOG=info to quieten)");
     log("token:", bridge.token);
     log("workspace:", bridge.workspaceDir);
     log("paste the token into the Trilium script's CONFIG block");

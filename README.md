@@ -127,6 +127,38 @@ For the service to start without a login shell, also run
 | `HARPER_BRIDGE_WORKSPACE` | `~/.local/share/harper-trilium` | Dictionaries and ignored lints.      |
 | `HARPER_LS_BIN`           | `harper-ls`                     | Path to the language server.         |
 | `HARPER_DIALECT`          | `American`                      | `American`, `Canadian` or `British`. |
+| `HARPER_BRIDGE_LOG`       | `debug`                         | `error`, `warn`, `info` or `debug`.  |
+
+### Logging
+
+Both halves log verbosely by default so a first run explains itself.
+
+**Bridge** — one line per event, prefixed with an ISO timestamp:
+
+```
+[2026-10-08T16:07:54.123Z] client connected (origin=trilium-app://app from=127.0.0.1:53422)
+[2026-10-08T16:07:56.456Z] ← lint id=3 note=leazLFgRGjQm chars=412
+[2026-10-08T16:07:56.489Z] → lint note=leazLFgRGjQm chars=412 in 33ms: 2 findings
+[2026-10-08T16:07:56.489Z]    Subject-verb agreement @0:12 | Possible typo @1:4
+```
+
+`←` is a request received, `→` a result produced, `WARN`/`ERROR` mark the
+things worth scrolling to. Note contents are never logged — only lengths,
+line/column positions, and the finding messages themselves.
+
+Levels: `debug` (everything) → `info` (connect, disconnect, rejections) →
+`warn` → `error`. Quiet it down once things work:
+
+```sh
+systemctl --user edit trilium-harper   # add: Environment=HARPER_BRIDGE_LOG=info
+systemctl --user restart trilium-harper
+```
+
+**Frontend** — the same trace in the Trilium devtools console, prefixed with
+`[harper]`, covering connect/retry, every request sent and reply received, lint
+counts and timings, and each reason a squiggle was not drawn. It is gated on
+`CONFIG.DEBUG` in the script; real failures are printed even with that off.
+Inspect the live state with `HarperTrilium` in the console.
 
 ### Dialect
 
@@ -239,9 +271,11 @@ test/lsp-integration.test.js 17 tests   against a real harper-ls process
 
 ## Troubleshooting
 
-**No squiggles.** Open the browser console. `SHOW_STATUS` puts a dot in the
-corner when the bridge is unreachable. Check the token matches, and confirm
-with `journalctl --user -u trilium-harper`.
+**No squiggles.** Open the Trilium devtools console — `[harper]` lines show
+whether the script loaded, whether the bridge connected, whether a lint was
+sent and what came back, and which step failed. `SHOW_STATUS` also puts a dot
+in the corner when the bridge is unreachable. Check the token matches, and
+confirm the bridge side with `journalctl --user -u trilium-harper`.
 
 **Squiggles but no suggestions.** The bridge has the text but not the fixes;
 that is a `harper-ls` version issue. This was developed and tested against
