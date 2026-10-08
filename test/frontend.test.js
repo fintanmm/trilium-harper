@@ -355,3 +355,25 @@ describe("frontend: offset round-trip through masking", () => {
         assert.equal(offsetToPosition(segments, end).offset, 9);
     });
 });
+
+describe("frontend: stylesheet", () => {
+    const source = readFileSync(SCRIPT, "utf8");
+
+    it("paints a mark whatever severity arrives", () => {
+        // harper-ls stamps every diagnostic with one severity (hint by default),
+        // so visibility must not hinge on a data-severity selector matching.
+        const bare = source.match(/\.harper-overlay \.harper-mark \{[^}]*\}/);
+        assert.ok(bare, "expected a bare .harper-mark rule");
+        assert.match(bare[0], /background-image/);
+    });
+
+    it("styles every LSP severity, including hint", () => {
+        for (const severity of [1, 2, 3, 4]) {
+            assert.match(
+                source,
+                new RegExp(`\\.harper-mark\\[data-severity="${severity}"\\]`),
+                `no rule for severity ${severity}`,
+            );
+        }
+    });
+});

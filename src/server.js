@@ -90,7 +90,9 @@ function describeLints(lints, max = 5) {
     const shown = lints.slice(0, max).map((lint) => {
         const start = lint?.range?.start;
         const where = start ? ` @${start.line}:${start.character}` : "";
-        return `${lint?.message ?? "?"}${where}`;
+        // Severity drives the squiggle's colour, so it belongs in the log.
+        const severity = lint?.severity !== undefined ? ` s=${lint.severity}` : "";
+        return `${lint?.message ?? "?"}${where}${severity}`;
     });
     const more = lints.length > max ? ` (+${lints.length - max} more)` : "";
     return shown.join(" | ") + more;

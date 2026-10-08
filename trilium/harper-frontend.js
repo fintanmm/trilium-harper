@@ -366,10 +366,14 @@ const CONFIG = {
             .harper-overlay .harper-mark {
                 position: absolute; pointer-events: auto; cursor: pointer;
                 background-repeat: repeat-x; background-size: 6px 3px; border-radius: 1px;
+                /* Fallback: harper-ls labels every diagnostic with one severity
+                   (hint by default), and an unmatched value must still paint. */
+                background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='M0 2 q 1.5 -2 3 0 t 3 0' fill='none' stroke='%23c0392b' stroke-width='1'/></svg>");
             }
             .harper-overlay .harper-mark[data-severity="1"] { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='M0 2 q 1.5 -2 3 0 t 3 0' fill='none' stroke='%23c0392b' stroke-width='1'/></svg>"); }
             .harper-overlay .harper-mark[data-severity="2"] { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='M0 2 q 1.5 -2 3 0 t 3 0' fill='none' stroke='%23d35400' stroke-width='1'/></svg>"); }
             .harper-overlay .harper-mark[data-severity="3"] { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='M0 2 q 1.5 -2 3 0 t 3 0' fill='none' stroke='%238e44ad' stroke-width='1'/></svg>"); }
+            .harper-overlay .harper-mark[data-severity="4"] { background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='M0 2 q 1.5 -2 3 0 t 3 0' fill='none' stroke='%232980b9' stroke-width='1'/></svg>"); }
             .harper-popover {
                 position: fixed; z-index: 1000; min-width: 180px; max-width: 340px;
                 background: #fff; color: #1a1a1a; border: 1px solid #d5d5d5; border-radius: 6px;
@@ -424,7 +428,11 @@ const CONFIG = {
                 once(`host:${this.noteId}`, `no overlay host for note=${this.noteId} — squiggles cannot be drawn`);
                 return;
             }
-            if (host.offsetParent === null && getComputedStyle(host).position === "static") {
+            // `inset: 0` only reaches the host when the host itself is the
+            // containing block; `offsetParent` stays non-null for a visible
+            // static element, so keying off it left the overlay anchored to a
+            // distant ancestor and the marks off their text.
+            if (getComputedStyle(host).position === "static") {
                 host.style.position = "relative";
             }
             if (this.overlay.parentElement !== host) host.appendChild(this.overlay);
