@@ -51,9 +51,9 @@ function loadFrontend() {
 }
 
 /* ── a stand-in for CKEditor's view tree, mirroring the real API ────────────
- * Elements expose `name`, `is` and `getChildren`; every node exposes `parent`
- * and `index`. Text nodes expose only `data` — there is no `getName()` and no
- * `offset` on view nodes, so the fake must not invent either.
+ * Elements expose `name`, `is` and `getChildren`; every node exposes `parent`.
+ * View elements have no `index` and no `offset`, so the fake must not invent
+ * either — a child index has to be counted from `getChildren()`.
  */
 function el(name, children = []) {
     const node = {
@@ -61,9 +61,8 @@ function el(name, children = []) {
         is: (n) => n === "element" || n === name,
         getChildren: () => children,
     };
-    children.forEach((child, i) => {
+    children.forEach((child) => {
         child.parent = node;
-        child.index = i;
     });
     return node;
 }
@@ -266,6 +265,67 @@ describe("frontend: offsetToPosition", () => {
 
     it("returns null for an empty document", () => {
         assert.equal(offsetToPosition([], 0), null);
+    });
+
+    it("parks an offset on the block-joining newline at the end of the previous block", () => {
+        const root = doc(para(["t", "hello"]), para(["t", "world"]));
+        const { text: wire, segments } = buildWireText(root);
+
+        // Offset 5 is the newline the builder inserts between the two blocks.
+        // It belongs to no segment, so a naive lookup would place it inside
+        // "world" at column -1 and the DOM converter would reject the range.
+        assert.equal(wire[5], "\n");
+        const at = offsetToPosition(segments, 5);
+        assert.ok(at, "expected a position");
+        assert.ok(at.offset >= 0, `offset must not be negative, got ${at.offset}`);
+        assert.equal(at.parent.data, "hello");
+        assert.equal(at.offset, 5, "the end of the first block");
+    });
+
+    it("clamps an offset past the last segment to the end of that segment", () => {
+        const root = doc(para(["t", "a"]), para([]));
+        const { text: wire, segments } = buildWireText(root);
+
+        // The trailing synthetic newline sits beyond every segment.
+        assert.equal(wire, "a\n");
+        const at = offsetToPosition(segments, wire.length);
+        assert.ok(at);
+        assert.equal(at.parent.data, "a");
+        assert.equal(at.offset, 1, "the end of the text node, not one past it");
+    });
+
+    it("counts a soft break's child index instead of assuming zero", () => {
+        const root = doc(para(["t", "a"], ["t", "b"], el("br")));
+        const { segments } = buildWireText(root);
+
+        // The <br> is the paragraph's third child, not its first.
+        const at = offsetToPosition(segments, 2);
+        assert.equal(at.parent.name, "paragraph");
+        assert.equal(at.offset, 2);
+    });
+
+    it("maps every offset in the wire text to a position inside its parent", () => {
+        const root = doc(
+            para(["t", "First line"], el("br"), ["t", "second"]),
+            para(["t", "Third"]),
+            el("pre", [text("const x = 1;", 0)]),
+            para([]),
+            para(["t", "Last"]),
+        );
+        const { text: wire, segments } = buildWireText(root);
+
+        for (let offset = 0; offset <= wire.length; offset++) {
+            const at = offsetToPosition(segments, offset);
+            assert.ok(at, `no position for wire offset ${offset} in ${JSON.stringify(wire)}`);
+            assert.ok(at.offset >= 0, `offset ${at.offset} is negative at wire offset ${offset}`);
+
+            const length =
+                typeof at.parent.data === "string" ? at.parent.data.length : [...at.parent.getChildren()].length;
+            assert.ok(
+                at.offset <= length,
+                `offset ${at.offset} is past length ${length} at wire offset ${offset} in ${JSON.stringify(wire)}`,
+            );
+        }
     });
 });
 

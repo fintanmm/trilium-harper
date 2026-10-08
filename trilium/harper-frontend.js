@@ -100,7 +100,7 @@ const CONFIG = {
                         wireStart: text.length,
                         wireEnd: text.length + 1,
                         parent: node.parent,
-                        nodeOffset: node.index ?? node.offset ?? 0,
+                        nodeOffset: childIndexOf(node),
                         break: true,
                     });
                     text += "\n";
@@ -151,6 +151,38 @@ const CONFIG = {
     }
 
     /**
+     * Position just past the last character a segment stands for.
+     *
+     * @param {object} segment
+     * @returns {{parent: object, offset: number}}
+     */
+    function endOf(segment) {
+        return { parent: segment.parent, offset: segment.nodeOffset + (segment.wireEnd - segment.wireStart) };
+    }
+
+    /**
+     * The index of `node` among its parent's children.
+     *
+     * View elements carry neither `.index` nor `.offset`, so the index has to
+     * be counted; otherwise a `<br>` would always claim to be the parent's
+     * first child.
+     *
+     * @param {object} node
+     * @returns {number}
+     */
+    function childIndexOf(node) {
+        const parent = node.parent;
+        if (!parent || typeof parent.getChildren !== "function") return 0;
+
+        let index = 0;
+        for (const child of parent.getChildren()) {
+            if (child === node) return index;
+            index += 1;
+        }
+        return 0;
+    }
+
+    /**
      * Resolves a wire offset to the view position it corresponds to.
      *
      * @param {Array<object>} segments
@@ -173,7 +205,19 @@ const CONFIG = {
             // Before or after the <br>, depending on which side we landed.
             return { parent: segment.parent, offset: segment.nodeOffset + (offset > segment.wireStart ? 1 : 0) };
         }
-        return { parent: segment.parent, offset: segment.nodeOffset + (offset - segment.wireStart) };
+
+        // The newline joining two blocks is in no segment: an offset landing on
+        // it would produce a negative column, and the resulting view range is
+        // rejected by the DOM converter. Park on the end of the block before it.
+        if (offset < segment.wireStart) {
+            const previous = segments[segments.indexOf(segment) - 1];
+            return previous ? endOf(previous) : { parent: segment.parent, offset: segment.nodeOffset };
+        }
+
+        // An offset past the last segment (the document's trailing newline)
+        // would overshoot the text node and be rejected as an invalid range.
+        const local = Math.min(offset - segment.wireStart, segment.wireEnd - segment.wireStart);
+        return { parent: segment.parent, offset: segment.nodeOffset + local };
     }
 
     /**
@@ -463,19 +507,23 @@ const CONFIG = {
             let unmapped = 0;
 
             for (const [index, lint] of lints.entries()) {
-                const range = toViewRange(view, current.segments, current.text, lint.range);
-                if (!range) {
+                // One unmappable finding must not cost the rest their squiggles.
+                let domRange;
+                try {
+                    const range = toViewRange(view, current.segments, current.text, lint.range);
+                    if (!range) throw new Error("no view range");
+                    domRange = view.domConverter.viewRangeToDom(range);
+                } catch (err) {
                     unmapped += 1;
                     if (fresh) {
                         log(
-                            `no view range for: ${lint.message} ` +
-                                `@${lint.range.start.line}:${lint.range.start.character}`,
+                            `no DOM range for: ${lint.message} ` +
+                                `@${lint.range.start.line}:${lint.range.start.character} (${err.message})`,
                         );
                     }
                     continue;
                 }
 
-                const domRange = view.domConverter.viewRangeToDom(range);
                 if (!domRange) {
                     unmapped += 1;
                     if (fresh) log(`view range with no DOM range for: ${lint.message}`);
