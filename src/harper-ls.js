@@ -39,6 +39,21 @@ function normaliseCommand(value) {
 }
 
 /**
+ * Display order for Harper's spelling helper commands.
+ *
+ * Harper emits `HarperIgnoreLint` before the dictionary additions, but the
+ * menu reads better with the dictionary choices first and the dismissive
+ * action last, where a stray click is least likely to silently suppress a
+ * finding. Commands absent from the map keep their relative order after these.
+ */
+const COMMAND_ORDER = new Map([
+    ["HarperAddToFileDict", 0],
+    ["HarperAddToWSDict", 1],
+    ["HarperAddToUserDict", 2],
+    ["HarperIgnoreLint", 3],
+]);
+
+/**
  * Builds the `harper-ls` settings object handed back on every
  * `workspace/configuration` pull.
  *
@@ -84,7 +99,12 @@ function buildConfig(workspaceDir, overrides) {
             Dashes: false,
             ...(linters ?? {}),
         },
-        codeActions: { ForceStable: true },
+        // Harper's `forceStable` reverses the *entire* code-action list, not
+        // just the actions it is documented to stabilise. That also flips the
+        // spell-check suggestions, so the best match arrives last. Leave it off
+        // (Harper's default) and let the native best-first order through; the
+        // command group is reordered in `codeAction()` if needed.
+        codeActions: { ForceStable: false },
         markdown: { IgnoreLinkTitle: true },
         ...rest,
     };
@@ -338,7 +358,7 @@ export class HarperLs {
 
         if (!Array.isArray(result)) return [];
 
-        return result.map((action) => {
+        const actions = result.map((action) => {
             // Harper returns two shapes that are easy to confuse.
             //
             // A replacement is a CodeAction: it has an `edit` (the actual text
@@ -368,6 +388,16 @@ export class HarperLs {
             if (!command) return null;
             return { kind: "command", title: action.title, ...command };
         }).filter(Boolean);
+
+        // Edits are already in Harper's best-first order; only the command
+        // group needs repositioning.
+        const edits = actions.filter((a) => a.kind === "edit");
+        const commands = actions.filter((a) => a.kind === "command");
+        const rank = (a) => COMMAND_ORDER.get(a.command) ?? COMMAND_ORDER.size;
+        // Stable: commands outside the map hold their relative position.
+        commands.sort((a, b) => rank(a) - rank(b));
+
+        return [...edits, ...commands];
     }
 
     /**

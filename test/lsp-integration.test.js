@@ -125,6 +125,39 @@ describe("harper-ls integration", { skip: HAS_HARPER_LS ? false : "harper-ls not
         );
     });
 
+    it("lists the most likely spelling first", async () => {
+        // Harper already ranks its suggestions best-first; the bridge once
+        // inverted them by enabling `forceStable`, which reverses the whole
+        // code-action list. "receive" is the canonical fix for "recieve".
+        const lints = await harper.lint(uri, "I recieve mail.");
+        const target = lints.find((l) => l.code === "SpellCheck" && l.message.includes("recieve"));
+        assert.ok(target, `expected a SpellCheck lint for "recieve", got: ${JSON.stringify(lints)}`);
+
+        const edits = (await harper.codeAction(uri, target.range)).filter((a) => a.kind === "edit");
+        assert.ok(edits.length > 1, `expected several suggestions, got: ${JSON.stringify(edits)}`);
+
+        assert.equal(
+            edits[0].newText,
+            "receive",
+            `expected "receive" first, got: ${JSON.stringify(edits.map((e) => e.newText))}`,
+        );
+    });
+
+    it("puts the dictionary commands before Ignore", async () => {
+        // "Ignore" is destructive-by-omission, so it belongs last, after the
+        // dictionary additions Harper happens to emit it before.
+        const lints = await harper.lint(uri, "Zorbulax is wibbly.");
+        const target = lints.find((l) => l.code === "SpellCheck");
+        assert.ok(target, `expected a spelling lint, got: ${JSON.stringify(lints)}`);
+
+        const commands = (await harper.codeAction(uri, target.range))
+            .filter((a) => a.kind === "command")
+            .map((a) => a.command);
+
+        assert.equal(commands[0], "HarperAddToFileDict", `got: ${JSON.stringify(commands)}`);
+        assert.equal(commands.at(-1), "HarperIgnoreLint", `got: ${JSON.stringify(commands)}`);
+    });
+
     it("stays silent on whitespace-only masked text", async () => {
         // Mirrors how the editor masks code blocks: same length, spaces only.
         const code = "const x = 1;";

@@ -34,7 +34,7 @@ message shape the editor can render.
 
 ```sh
 npm install
-npm test          # 53 tests: protocol, bridge, origins, frontend, and a real harper-ls
+npm test          # 67 tests: protocol, bridge, origins, frontend, and a real harper-ls
 ```
 
 `npm test` starts an actual `harper-ls`, so it also confirms the binary is
@@ -248,6 +248,10 @@ soft breaks, and astral characters.
 - A lint is only worth suggesting an edit if the code action actually carries
   one; Harper also returns bare commands like `HarperAddToUserDict`, which are
   classified separately.
+- Harper's `forceStable` code-action option reverses its **entire** action list,
+  not just the actions it is meant to stabilise. Enabling it flips the spelling
+  suggestions so the best match arrives last. The bridge leaves it off, then
+  reorders the command group so the dictionary additions precede `Ignore`.
 - Harper rejects its **entire** config if the workspace directory does not exist,
   silently falling back to defaults. The bridge creates the directory first.
 
@@ -270,10 +274,10 @@ src/harper-ls.js  harper-ls process, config, diagnostics, code actions
 src/server.js     WebSocket bridge, note lifecycle
 trilium/harper-frontend.js   the file you attach to a note
 deploy/trilium-harper.service
-test/bridge.test.js          9 tests   WebSocket protocol and note lifecycle
+test/bridge.test.js         10 tests   WebSocket protocol and note lifecycle
 test/origin.test.js          8 tests   the Origin allow-list
-test/frontend.test.js       18 tests   editor text extraction, via node:vm
-test/lsp-integration.test.js 17 tests   against a real harper-ls process
+test/frontend.test.js       30 tests   editor text extraction, via node:vm
+test/lsp-integration.test.js 19 tests   against a real harper-ls process
 ```
 
 ## Troubleshooting
@@ -285,8 +289,9 @@ in the corner when the bridge is unreachable. Check the token matches, and
 confirm the bridge side with `journalctl --user -u trilium-harper`.
 
 **Squiggles but no suggestions.** The bridge has the text but not the fixes;
-that is a `harper-ls` version issue. This was developed and tested against
-**harper-ls 2.11.0** — check yours with `harper-ls --version`. The integration
+that is a `harper-ls` version issue. This was developed against
+**harper-ls 2.11.0** and re-verified against **2.12.0** — check yours with
+`harper-ls --version`. The integration
 relies on behavior that is not part of the LSP spec (see
 [Harper behaviour worth knowing](#harper-behaviour-worth-knowing), which is the
 first thing to re-check after a version bump.

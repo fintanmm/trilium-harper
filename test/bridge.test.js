@@ -174,14 +174,18 @@ describe("bridge", { skip: HAS_HARPER_LS ? false : "harper-ls not installed" }, 
         assert.equal(result.name, "HarperAddToUserDict");
 
         // The bridge pins every dictionary inside its own workspace, so this
-        // must not touch the real ~/.config/harper-ls.
+        // must not touch the real ~/.config/harper-ls. Snapshot that file
+        // first: a machine with Harper installed already has it, so asserting
+        // it is absent would test the environment rather than the bridge.
+        const globalDict = join(homedir(), ".config", "harper-ls", "dictionary.txt");
+        const globalBefore = existsSync(globalDict) ? readFileSync(globalDict) : null;
+
         const userDict = join(workspace, "user-dictionary.txt");
         assert.ok(existsSync(userDict), `expected Harper to have written ${userDict}`);
         assert.match(readFileSync(userDict, "utf8"), new RegExp(word));
-        assert.ok(
-            !existsSync(join(homedir(), ".config", "harper-ls", "dictionary.txt")),
-            "the bridge must not write to the user's global Harper config",
-        );
+        const globalUnchanged =
+            globalBefore === null ? !existsSync(globalDict) : readFileSync(globalDict).equals(globalBefore);
+        assert.ok(globalUnchanged, "the bridge must not modify the user's global Harper config");
 
         const after = await request(ClientMessage.LINT, { noteId, text: `${word} is wibbly.` });
         assert.ok(
